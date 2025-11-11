@@ -40,15 +40,16 @@ async function uploadToImgBB(file: File): Promise<{ id: string; url: string }> {
   });
   const data = await res.json();
   if (!data?.success) throw new Error("Nie udało się wysłać pliku do imgbb");
-  return { id: data.data.id, url: data.data.url };
+  // imgbb zwraca m.in. data.data.url (skrót) i data.data.display_url
+  return { id: data.data.id as string, url: (data.data.url as string) ?? (data.data.display_url as string) };
 }
 
 type UIChapter = {
   tytul: string;
   czas: string;
-  file?: File | null; // opcjonalny lokalny plik .md (do podglądu)
-  imageFiles?: File[]; // obrazki rozdziału
-  urls?: { md?: string };
+  file?: File | null; // lokalny podgląd .md (nie wysyłamy do bazy)
+  imageFiles?: File[]; // obrazki rozdziału (upload do imgbb)
+  urls?: { md?: string }; // docelowy URL .md
 };
 
 type MotywPick = {
@@ -202,26 +203,31 @@ export default function AddInterpretacjaPage() {
       // 1) upload obrazków rozdziałów
       const uploadedChapters = await Promise.all(
         rozdzialy.map(async (r) => {
-          const mdUrl: string | undefined = r.urls?.md; // <- const, zgodnie z lintem
+          const mdUrl: string | undefined = r.urls?.md;
           let imgs: string[] = [];
           if (r.imageFiles && r.imageFiles.length > 0) {
-            const ups = await Promise.all(
-              r.imageFiles.map((f) => uploadToImgBB(f))
-            );
+            const ups = await Promise.all(r.imageFiles.map((f) => uploadToImgBB(f)));
             imgs = ups.map((u) => u.url);
           }
           return { ...r, urls: { ...r.urls, md: mdUrl }, obrazki: imgs };
         })
       );
 
-      // 2) finalne rozdziały do zapisu
-      const outRozdzialy: Rozdzial[] = uploadedChapters.map((r, i) => ({
-        id: slug(r.tytul || `rozdzial-${i + 1}`) || `r-${i + 1}-${Date.now()}`,
-        tytul: r.tytul || `Rozdział ${i + 1}`,
-        czas: r.czas || "~",
-        ...(r.urls?.md ? { url: r.urls.md } : {}),
-        ...(r.obrazki && r.obrazki.length ? { obrazki: r.obrazki } : {}),
-      }));
+      // 2) finalne rozdziały do zapisu (bez undefined w polach)
+      const outRozdzialy: Rozdzial[] = uploadedChapters.map((r, i) => {
+        const base: Rozdzial = {
+          id: slug(r.tytul || `rozdzial-${i + 1}`) || `r-${i + 1}-${Date.now()}`,
+          tytul: r.tytul || `Rozdział ${i + 1}`,
+          czas: r.czas || "~",
+        };
+        if (r.urls?.md && r.urls.md.trim().length > 0) {
+          base.url = r.urls.md.trim();
+        }
+        if (r.obrazki && r.obrazki.length > 0) {
+          base.obrazki = r.obrazki;
+        }
+        return base;
+      });
 
       // 3) motywy
       const motywy = wybraneMotywy.map((m) => ({
@@ -231,8 +237,8 @@ export default function AddInterpretacjaPage() {
       }));
       const motywyIds = wybraneMotywy.map((m) => m.id);
 
-      // 4) zapis
-      const docRef = await addDoc(collection(db, "zrodla"), {
+      // 4) zapis – składamy obiekt bez pól z `undefined`
+      const payload: Record<string, unknown> = {
         typ: "interpretacja",
         tytul: form.tytul,
         podtytul: form.podtytul,
@@ -240,16 +246,9 @@ export default function AddInterpretacjaPage() {
         autor: form.autor,
         wspolczesnyAutor: form.wspolczesnyAutor,
         dataPublikacji: form.dataPublikacji,
-        epoki: form.epokiCSV
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean),
-        tags: form.tagsCSV
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean),
+        epoki: form.epokiCSV.split(",").map((s) => s.trim()).filter(Boolean),
+        tags: form.tagsCSV.split(",").map((s) => s.trim()).filter(Boolean),
         czasCzytania: form.czasCzytania,
-        coverUrl,
         createdBy: user.uid,
         createdAt: serverTimestamp(),
         motywy,
@@ -257,16 +256,22 @@ export default function AddInterpretacjaPage() {
         rozdzialy: outRozdzialy,
         argumenty,
         cytaty,
-      });
+      };
+
+      // coverUrl tylko jeśli istnieje
+      if (coverUrl) {
+        payload.coverUrl = coverUrl;
+      }
+      // ewentualnie – gdy chcesz zawsze mieć pole w dokumencie:
+      // payload.coverUrl = coverUrl ?? null;
+
+      const docRef = await addDoc(collection(db, "zrodla"), payload);
 
       alert("✓ Dodano źródło (interpretację)");
       nav(`/interpretacja/${docRef.id}`);
     } catch (err: unknown) {
-      if (err instanceof Error) {
-        alert("Błąd: " + err.message);
-      } else {
-        alert("Wystąpił nieznany błąd");
-      }
+      const msg = err instanceof Error ? err.message : String(err);
+      alert("Błąd: " + msg);
     } finally {
       setSaving(false);
     }
@@ -294,21 +299,21 @@ export default function AddInterpretacjaPage() {
           />
           <input
             className="border p-2"
-            placeholder="Lektura"
+            placeholder="Utwór (np. Lalka)"
             value={form.lektura}
             onChange={(e) => setForm({ ...form, lektura: e.target.value })}
             required
           />
           <input
             className="border p-2"
-            placeholder="Autor klasyki"
+            placeholder="Autor klasyki (np. Bolesław Prus)"
             value={form.autor}
             onChange={(e) => setForm({ ...form, autor: e.target.value })}
             required
           />
           <input
             className="border p-2"
-            placeholder="Autor współczesny"
+            placeholder="Autor współczesny (opcjonalnie)"
             value={form.wspolczesnyAutor}
             onChange={(e) =>
               setForm({ ...form, wspolczesnyAutor: e.target.value })
@@ -560,7 +565,7 @@ export default function AddInterpretacjaPage() {
               <button
                 type="button"
                 onClick={pushCytat}
-                className="px-3 py-2 border-2 border-black text-sm hover:bg-neutral-50"
+                className="px-3 py-2 border-2 border-black text-sm hover:bg-amber-50"
               >
                 Dodaj
               </button>

@@ -7,6 +7,22 @@ import type { MotywDef, MotywId, InterpretacjaMeta } from "../types";
 
 const STORAGE_KEY = (id: MotywId) => `motyw_${id}`;
 
+type MaterialItem = {
+  tytul: string;
+  opis: string;
+  badge?: string; // np. dziedzina (literacka/filmowa/…)
+  autor?: string;
+};
+
+type MaterialGroup = {
+  label: string; // „Współczesność” | „Klasyka”
+  items: MaterialItem[];
+};
+
+function isWspolczesnosc(epoki: string[]): boolean {
+  return epoki.some((e) => e.toLowerCase() === "współczesność" || e.toLowerCase() === "wspolczesnosc");
+}
+
 export default function MotywPage() {
   const { motywId } = useParams<{ motywId: MotywId }>();
   const navigate = useNavigate();
@@ -31,6 +47,7 @@ export default function MotywPage() {
         if (!on) return;
         setMotyw(m);
         setInterpretacje(interps);
+
         // localStorage restore
         try {
           const saved = localStorage.getItem(STORAGE_KEY(motywId));
@@ -40,7 +57,6 @@ export default function MotywPage() {
             setWybraneArg(parsed.argumenty || []);
           }
         } catch (e) {
-          // Brak dostępu do LS/niepoprawny JSON — ignorujemy cicho, ale nie zostawiamy pustego bloku
           console.debug("[MotywPage] Restore from localStorage failed:", e);
         }
       } finally {
@@ -60,7 +76,6 @@ export default function MotywPage() {
         JSON.stringify({ odpowiedz, argumenty: wybraneArg })
       );
     } catch (e) {
-      // Safari private mode / quota / policy — pomijamy
       console.debug("[MotywPage] Save to localStorage failed:", e);
     }
   }, [odpowiedz, wybraneArg, motywId]);
@@ -87,12 +102,6 @@ ${
     : "(brak)"
 }
 
-## Przykłady współczesne
-${motyw?.materialy.wspolczesne.map((m) => `- ${m.tytul} (${m.typ})`).join("\n")}
-
-## Przykłady klasyczne
-${motyw?.materialy.klasyczne.map((m) => `- ${m.tytul} – ${m.autor}`).join("\n")}
-
 ---
 *Notatka: ${new Date().toLocaleDateString("pl-PL")}*
 `;
@@ -114,6 +123,43 @@ ${motyw?.materialy.klasyczne.map((m) => `- ${m.tytul} – ${m.autor}`).join("\n"
     () => odpowiedz.trim().split(/\s+/).filter(Boolean).length,
     [odpowiedz]
   );
+
+  /**
+   * MATERIAŁY: Budowane WYŁĄCZNIE z dokumentów powiązanych z motywem.
+   * Reguła:
+   *  - jeśli dokument ma w epokach „Współczesność” → grupa „Współczesność”
+   *  - w przeciwnym razie → grupa „Klasyka”
+   * Wyświetlamy:
+   *  - tytuł dokumentu
+   *  - opis = lektura + autor (lub podtytuł jeśli chcesz)
+   *  - badge = dziedzina (jeśli jest w modelu danych)
+   */
+  const materialGroups: MaterialGroup[] = useMemo(() => {
+    if (!interpretacje.length) return [];
+
+    const wsp: MaterialItem[] = [];
+    const kla: MaterialItem[] = [];
+
+    for (const doc of interpretacje) {
+      const groupIsWsp = isWspolczesnosc(Array.isArray(doc.epoki) ? doc.epoki : []);
+      const item: MaterialItem = {
+        tytul: doc.tytul,
+        opis:
+          doc.podtytul && doc.podtytul.trim().length > 0
+            ? doc.podtytul
+            : `${doc.lektura} – ${doc.autor}`,
+        badge: (doc as Partial<InterpretacjaMeta> & { dziedzina?: string }).dziedzina,
+        autor: groupIsWsp ? (doc.wspolczesnyAutor || doc.autor) : doc.autor,
+      };
+      if (groupIsWsp) wsp.push(item);
+      else kla.push(item);
+    }
+
+    const out: MaterialGroup[] = [];
+    if (wsp.length) out.push({ label: "Współczesność", items: wsp });
+    if (kla.length) out.push({ label: "Klasyka", items: kla });
+    return out;
+  }, [interpretacje]);
 
   if (!motywId) {
     return (
@@ -198,63 +244,55 @@ ${motyw?.materialy.klasyczne.map((m) => `- ${m.tytul} – ${m.autor}`).join("\n"
               </div>
             </section>
 
-            <section className="bg-white rounded-lg border border-neutral-200 p-6 lg:p-8">
-              <h2 className="text-base lg:text-lg font-semibold text-neutral-900 mb-6">
-                Materiały do wykorzystania
-              </h2>
+            {/* ——— MATERIAŁY: z dokumentów powiązanych ——— */}
+            {materialGroups.length > 0 && (
+              <section className="bg-white rounded-lg border border-neutral-200 p-6 lg:p-8">
+                <h2 className="text-base lg:text-lg font-semibold text-neutral-900 mb-6">
+                  Materiały do wykorzystania
+                </h2>
 
-              <div className="mb-6">
-                <h3 className="text-xs uppercase tracking-wide text-neutral-400 font-semibold mb-3">
-                  Współczesność
-                </h3>
-                <div className="space-y-3">
-                  {motyw.materialy.wspolczesne.map((m, i) => (
-                    <div
-                      key={i}
-                      className="bg-neutral-50 rounded-lg border border-neutral-200 p-4"
-                    >
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="text-xs px-2 py-0.5 bg-white border border-neutral-300 rounded text-neutral-600 uppercase font-medium">
-                          {m.typ}
-                        </span>
-                        <span className="text-sm font-semibold text-neutral-900">
-                          {m.tytul}
-                        </span>
+                <div className="space-y-8">
+                  {materialGroups.map((group, gi) => (
+                    <div key={gi}>
+                      <h3 className="text-xs uppercase tracking-wide text-neutral-400 font-semibold mb-3">
+                        {group.label}
+                      </h3>
+                      <div className="space-y-3">
+                        {group.items.map((m, i) => (
+                          <div
+                            key={i}
+                            className="bg-neutral-50 rounded-lg border border-neutral-200 p-4"
+                          >
+                            <div className="flex items-center gap-2 mb-2">
+                              {m.badge && (
+                                <span className="text-xs px-2 py-0.5 bg-white border border-neutral-300 rounded text-neutral-600 uppercase font-medium">
+                                  {m.badge}
+                                </span>
+                              )}
+                              <span className="text-sm font-semibold text-neutral-900">
+                                {m.tytul}
+                              </span>
+                              {m.autor && (
+                                <span className="text-xs text-neutral-500">– {m.autor}</span>
+                              )}
+                            </div>
+                            <p className="text-sm text-neutral-600">{m.opis}</p>
+                          </div>
+                        ))}
                       </div>
-                      <p className="text-sm text-neutral-600">{m.opis}</p>
                     </div>
                   ))}
                 </div>
-              </div>
+              </section>
+            )}
 
-              <div>
-                <h3 className="text-xs uppercase tracking-wide text-neutral-400 font-semibold mb-3">
-                  Klasyka
-                </h3>
-                <div className="space-y-3">
-                  {motyw.materialy.klasyczne.map((m, i) => (
-                    <div
-                      key={i}
-                      className="bg-neutral-50 rounded-lg border border-neutral-200 p-4"
-                    >
-                      <p className="text-sm font-semibold text-neutral-900">
-                        {m.tytul}{" "}
-                        <span className="text-neutral-500 font-normal">– {m.autor}</span>
-                      </p>
-                      <p className="text-sm text-neutral-600 mt-1">{m.opis}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </section>
-
+            {/* ——— ODP ——— */}
             <section className="bg-gradient-to-br from-amber-50 to-orange-50 rounded-lg border-2 border-amber-300 p-6 lg:p-8">
               <h2 className="text-base lg:text-lg font-semibold text-neutral-900 mb-4">
                 ✍️ Twoja odpowiedź
               </h2>
               <p className="text-sm text-neutral-600 mb-4 leading-relaxed">
                 Napisz swoją odpowiedź na pytanie przewodnie (minimum 100 słów).
-                Możesz wykorzystać materiały powyżej.
               </p>
 
               <textarea
@@ -291,13 +329,14 @@ ${motyw?.materialy.klasyczne.map((m) => `- ${m.tytul} – ${m.autor}`).join("\n"
               </button>
             </section>
 
+            {/* ——— POWIĄZANE DOKUMENTY (pełna lista) ——— */}
             {interpretacje.length > 0 && (
               <section className="bg-white rounded-lg border border-neutral-200 p-6 lg:p-8">
                 <h2 className="text-base lg:text-lg font-semibold text-neutral-900 mb-3">
                   📖 Chcesz przeczytać więcej?
                 </h2>
                 <p className="text-sm text-neutral-600 mb-6">
-                  Te źródła poruszają motyw <strong>{motyw.nazwa}</strong>:
+                  Te dokumenty poruszają motyw <strong>{motyw.nazwa}</strong>:
                 </p>
                 <div className="space-y-3">
                   {interpretacje.map((interp) => (
@@ -306,13 +345,28 @@ ${motyw?.materialy.klasyczne.map((m) => `- ${m.tytul} – ${m.autor}`).join("\n"
                       to={`/interpretacja/${interp.id}`}
                       className="block bg-neutral-50 hover:bg-amber-50 border border-neutral-200 hover:border-amber-300 rounded-lg p-4 transition-all duration-200"
                     >
-                      <h3 className="text-sm font-semibold text-neutral-900 mb-1">
-                        {interp.tytul}
-                      </h3>
-                      <p className="text-xs text-neutral-500 mb-2">
-                        {interp.lektura} – {interp.autor}
+                      <div className="flex items-center justify-between gap-3">
+                        <h3 className="text-sm font-semibold text-neutral-900">
+                          {interp.tytul}
+                        </h3>
+                        {"dziedzina" in interp && (interp as { dziedzina?: string }).dziedzina && (
+                          <span
+                            className="text-[10px] uppercase tracking-wide px-2 py-1 rounded border border-neutral-300 text-neutral-600 bg-white"
+                            title="Dziedzina interpretacji"
+                          >
+                            {(interp as { dziedzina?: string }).dziedzina}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-neutral-500 mt-1">
+                        Utwór: <strong>{interp.lektura}</strong> – {interp.autor}
                       </p>
-                      <span className="text-xs font-medium text-amber-600">Czytaj →</span>
+                      <div className="mt-3 flex items-center justify-between">
+                        <span className="text-[11px] text-neutral-500">
+                          ⏱️ {interp.czasCzytania} · {interp.rozdzialy.length} rozdz.
+                        </span>
+                        <span className="text-xs font-medium text-amber-600">Czytaj →</span>
+                      </div>
                     </Link>
                   ))}
                 </div>
